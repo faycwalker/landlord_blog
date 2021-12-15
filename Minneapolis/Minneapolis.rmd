@@ -1,0 +1,444 @@
+---
+title: "Minneapolis"
+author: "Eleanor Noble"
+date: "12/7/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Install packages
+```{r}
+library(pacman)
+p_load(tidyverse, tidycensus, janitor, sf, skimr, beepr, stringr, stringdist,pacman)
+```
+Read in data
+```{r}
+henn_parcels_raw<-read_csv("C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/Hennepin_County_Parcels_12.4.2021.csv")%>%janitor::clean_names()
+
+mpls_rentals<-read_csv("C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/Active_Rental_Licenses_minneapolis_12.3.2021.csv")%>%janitor::clean_names()
+
+zipco_lu <- read_csv("C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/zipco_lu.csv")
+```
+
+Clean columns
+```{r}
+#changing sale year to a date
+henn_parcels <- henn_parcels_raw%>%
+  mutate(sale_date = lubridate::ymd(sale_date))
+
+#change all characters to lowercase
+henn_parcels<-henn_parcels%>%
+  mutate_if(.predicate = is.character, .funs = tolower)
+
+henn_parcels<-henn_parcels%>%
+  select(pid,
+         house_no,
+         street_nm,
+         condo_no,
+         mailing_munic_nm,
+         zip_cd, 
+         owner_nm, 
+         taxpayer_nm,
+         taxpayer_nm_1, 
+         taxpayer_nm_2,
+         taxpayer_nm_3,
+         munic_nm,
+         build_yr,
+         sale_date,
+         sale_price,
+         sale_code,
+         tax_tot,
+         pr_typ_nm1,
+         hmstd_cd1
+         )
+
+#change NAs to nothing in character columns
+na_to_nothing <- function(x) ifelse(is.na(x),'',x)
+
+#cleans the strings in character columns to be all uppercase, removes whitespace, and removes NAs
+henn_parcels<-henn_parcels%>%
+  mutate_if(.predicate = is.factor, .funs = as.character)%>%
+  mutate_if(.predicate = is.character,.funs = na_to_nothing)%>%
+  mutate_if(.predicate = is.character, .funs = trimws)%>%
+  mutate_if(.predicate = is.character, .funs = tolower)
+
+#clean up the parcel address columns to be simplified to just building number and streetname columns or full address
+henn_parcels<-henn_parcels%>%
+  mutate(address_full = paste(house_no, street_nm,condo_no, mailing_munic_nm, zip_cd, "MN"))%>%
+  select(-street_nm,
+         -condo_no)
+
+#clean taxpayer address to get a taxpayer zipcode and taxpayer full address
+henn_parcels<-henn_parcels%>%
+  mutate(tax_address_full = paste(taxpayer_nm_1,taxpayer_nm_2,taxpayer_nm_3),
+         tax_zip = regmatches(tax_address_full, gregexpr('[0-9]{5}(-[0-9]{4})?(?!.*[0-9]{5}(-[0-9]{4})?)', tax_address_full, perl = TRUE)))%>%
+  select(-taxpayer_nm_1,
+         -taxpayer_nm_2,
+         -taxpayer_nm_3)
+```
+create a parcel and taxpayer spreadsheet for geocoding
+```{r}
+henn_parcels<-henn_parcels%>%
+  mutate(id = row_number())
+
+parcel_add<-henn_parcels%>%
+  select(id,
+         address_full)
+
+tax_add<-henn_parcels%>%
+  select(id,
+         tax_address_full)
+
+mpls_rental_owner<-mpls_rentals%>%
+  mutate(owner_add_full = paste(owner_address1, owner_address2, owner_city, owner_state, owner_zip))%>%
+  select(apn,
+         owner_add_full)
+
+write_csv(mpls_rental_owner, "C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/rental_owner_add_for_geocoding.12.15.2021.csv")
+write_csv(parcel_add, "C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/henn_parcel_add_for_geocoding.12.15.2021.csv")
+write_csv(tax_add, "C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/henn_tax_add_for_geocoding.12.15.2021.csv")
+```
+
+read in the geocoded addresses
+```{r}
+henn_parcels_geocoded<-read_csv("C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/henn_parcel_add_for_geocoding.12.15.2021-geocoded.csv", col_types = cols(.default = "c"))
+
+henn_parcels_geocoded<-henn_parcels_geocoded%>%
+  select(id,
+         Match_addr,
+         Longitude,
+         Latitude,
+         Postal)%>%
+  rename(address_full_clean = Match_addr,
+         parcel_zip = Postal,
+         parcel_long = Longitude,
+         parcel_lat = Latitude
+  )
+
+henn_tax_addr_geocoded<-read_csv("C:/Users/enoble/Box/Landlord Blog/Data/Minneapolis/henn_tax_add_for_geocoding.12.15.2021-geocoded.csv", col_types = cols(.default = "c"))
+
+henn_tax_addr_geocoded<-henn_tax_addr_geocoded%>%
+  select(id,
+         Match_addr,
+         Longitude,
+         Latitude,
+         Postal)%>%
+    rename(tax_full_clean = Match_addr,
+         tax_zip = Postal,
+         tax_long=Longitude,
+         tax_lat = Latitude
+  )
+
+geocoded<-henn_parcels_geocoded%>%
+  left_join(henn_tax_addr_geocoded, by = c("id"="id"))
+
+#change a few variable names to match previous code
+henn_parcels<-henn_parcels%>%
+  rename(use1_desc = pr_typ_nm1,
+         homestead = hmstd_cd1)
+
+#only keep needed columns and then join cleaned geocoded columns
+henn_parcels<-henn_parcels%>%
+  select(pid,
+         zip_cd,
+         munic_nm,
+         build_yr,
+         sale_date,
+         sale_price,
+         tax_tot,
+         use1_desc,
+         homestead,
+         id)
+
+henn_parcels<-henn_parcels%>%
+  mutate(id = as.character(id))%>%
+  left_join(geocoded, by = ("id"="id"))
+```
+
+join the mpls rentals to the parcels dataset
+```{r}
+mpls_rentals_henn_parcels<-henn_parcels%>%
+  left_join(mpls_rentals, by = c("pid" = "apn"))
+```
+get the taxpayer and owner names back on there! oops
+
+```{r}
+tax_owner_names<-henn_parcels_raw%>%
+  select(pid,
+         owner_nm,
+         taxpayer_nm)
+
+mpls_rentals_henn_parcels<-mpls_rentals_henn_parcels%>%
+  left_join(tax_owner_names, by = c("pid" = "pid"))
+```
+
+clean the columns again...
+```{r}
+#cleans the strings in character columns to be all uppercase, removes whitespace, and removes NAs
+mpls_rentals_henn_parcels<-mpls_rentals_henn_parcels%>%
+  mutate_if(.predicate = is.factor, .funs = as.character)%>%
+  mutate_if(.predicate = is.character,.funs = na_to_nothing)%>%
+  mutate_if(.predicate = is.character, .funs = trimws)%>%
+  mutate_if(.predicate = is.character, .funs = tolower)
+
+mpls_rentals_henn_parcels<-mpls_rentals_henn_parcels%>%
+  rename(tax_address_full = tax_full_clean,
+         address_full = address_full_clean)
+```
+
+
+```{r,zip codes for geography designations}
+#Geographic look up table from Missouri Census Data Center
+zipco_lu <- zipco_lu %>%
+  mutate_all(as.character) %>%
+  group_by(zcta5) %>%
+  filter(afact == max(afact)) %>%
+  ungroup() %>%
+  mutate(stab = "MN")%>%
+  select(tax_zip = zcta5, tax_state = stab, tax_co = cntyname)
+
+# Metro County vector
+metro_cnty <- c("Hennepin MN", "Ramsey MN", "Anoka MN", "Dakota MN", "Washington MN", "Scott MN", "Carver MN")
+```
+
+ownership classification
+```{r, adding ownership classification}
+### ownership class ###
+llc <- "/\bllp\\b|\\blllp\\b|\\blllc\\b|\\blimited\\b|\\bllc|\\blp"
+
+coop <- "coop|cooperative"
+
+trust<- "trtee|trustee|trust|trst|\\breit\\b"
+
+private_ed  <- "k-12|academies|college|higher ed|private academies|univ of minn|u of m|university of minnesota|university|school|academy|college|school"
+
+public <- "minneapois|airport|transitional housing|federal|county|public|municiple|mpha|state property|transit|council|mpha|municiapl|
+municipal|public hospital|state property|mpls|library|right of way|row|public works|hennepin forfeited|city of|federal|fortified|henn co|henn cty|minnesota historical|municipal|hra|board|ramsey|council|metropolitan"
+
+nonprof <- "bptst chrc|islamic|non profit|charitable|muslim|synagogue|mosque|non profit|catholic|baptist|methodist|jewish|urban homeworks|community hsg|com hsng|land bank|charity|lutheran"
+
+corp <- "\\bcorp\\b|\\bbankers\\b|\\bcorporation\\b|\\bagency\\b|\\breal estate\\b|\\bmgmt\\b|\\basset\\b|\\bmanagement\\b|\\bbank\\b|\\binc\\b|\\bcompany\\b|\\binvest\\b|\\binvestment\\b|\\binvestments\\b|\\bservicing\\b|\\bmtg\\b|federal natl mortgage assn"
+
+utility<- "railroad|power co|rr co|henn co|railway|railroad property|railroad property"
+
+#create fields for if the parcel and tax address are the same, single family
+mpls_rentals_henn_parcels <- mpls_rentals_henn_parcels %>% mutate(
+
+    same_address = ifelse(tax_address_full==address_full, 1, 0),
+
+    sf = ifelse(use1_desc %in% c("res 1 unit", "residential"), 1, 0), 
+
+    use1_desc = ifelse(use1_desc %in% c("vacant land - residential", "res v land", "vacant land-apartment"), "vacant", use1_desc),
+
+    sale_year = lubridate::year(sale_date)
+
+  ) %>%
+  left_join(zipco_lu, by = "tax_zip")
+
+# skim(henn_parcels)
+
+######## 
+#this creates categories for if the taxpayer and owner are at the same address, theres a PO box (a lot of these so we need to filter them out eventually), if they're in the same zipcode, the same region (metro region), or out of the metro region. The sum class is a test to see if there are multiple location relationship hits for a single parcel
+mpls_rentals_henn_parcels  <- mpls_rentals_henn_parcels  %>%
+  mutate(
+
+    homestead = ifelse(homestead == "f", "p", homestead),
+
+    g_sadd = case_when(
+      same_address == 1 ~ 1,
+      TRUE               ~ 0),
+
+    g_box  = case_when(
+      (str_detect(tax_address_full,"box")) & same_address == 0 ~ 1,
+      TRUE                                                         ~ 0
+    ),
+
+    g_szip   = case_when(
+      zip_cd == tax_zip & g_sadd == 0 ~ 1,
+      TRUE                          ~ 0),
+
+    g_sreg  = case_when(
+      tax_zip %in% metro_cnty & g_szip == 0 & g_sadd == 0  ~ 1,
+      TRUE                                                 ~ 0),
+
+    g_oreg = case_when(
+      g_sreg == 0 & g_szip == 0 & g_sadd == 0  ~ 1,
+     TRUE                                                 ~ 0),
+
+    sumclass = g_sadd + g_szip 
+    + g_sreg + g_oreg,
+
+    owner_geo = case_when(
+      g_sadd == 1  ~ "sadd",
+      g_box  == 1  ~ "sbox",
+      g_szip == 1  ~ "szip",
+      g_sreg == 1  ~ "sreg",
+      g_oreg == 1  ~ "oreg"
+    ))
+
+# par geo index
+# Geography lu
+#####
+#this is the actual ownership classification. Owner type and owner typed are just different ways of grouping the categories 
+mpls_rentals_henn_parcels <- mpls_rentals_henn_parcels %>%
+  mutate(
+    llc  = case_when(
+      (str_detect(owner_name, llc) | str_detect(applicant_name, llc)
+       |str_detect(owner_name, llc) | str_detect(taxpayer_nm, llc)) & tax_tot>0 ~ 1,
+      TRUE                                                              ~0),
+
+    corp =
+      case_when(
+        (str_detect(taxpayer_nm, corp)|str_detect(applicant_name, corp)|str_detect(owner_name, corp))
+        & tax_tot>0 & homestead == "n" & llc == 0 ~ 1,
+        TRUE                                                               ~ 0),
+
+    np   = case_when(
+      tax_tot==0                                          ~ 1,
+      (str_detect(applicant_name, nonprof)|str_detect(taxpayer_nm, nonprof))  ~ 1,
+      TRUE                                                         ~ 0
+    ),
+
+    gov  = case_when(
+      (str_detect(taxpayer_nm, public)| str_detect(taxpayer_nm, private_ed) | str_detect(taxpayer_nm, utility))&
+        homestead == "n" & llc == 0 & corp == 0 & tax_tot==0 ~ 1,
+      TRUE                                                         ~ 0
+    ),
+
+
+    hmstd = case_when(
+      (homestead == "h" | homestead == "p")  ~ 1,
+      TRUE             ~ 0
+    ),
+
+    own_sum = llc + corp + gov + np + hmstd,
+
+    owner_typed = case_when(
+      np      == 1  ~ "np",
+      llc     == 1 & np == 0  ~ "llc",
+      corp    == 1 & np == 0  ~ "corp",
+      gov     == 1  ~ "gov",
+      own_sum == 0  ~ "othpriv",
+      hmstd   == 1  ~ "hmstd"),
+
+    owner_type = case_when(
+      gov == 1 | np ==  1 ~ "govnp",
+      llc == 1 | corp == 1 ~ "corpllc",
+      hmstd   == 1  ~ "hmstd",
+      own_sum == 0  ~ "othpriv"))
+  # select(-tax_more) %>%
+  # distinct(pin, dataset, .keep_all = TRUE) 
+# %>%
+#   mutate(acres = sq_meters*0.000247105)
+
+table(mpls_rentals_henn_parcels$owner_type)
+```
+
+Create a potential/likely rental category in the hennepin parcel dataset
+```{r}
+#this uses land use codes that were confirmed in the city wide dataset to have rental properties. I'm only including ones that have 20 or more known units to be sure, on the conservative side 
+
+#land use that doesnt need a homestead to be considered a rental
+rental_no_hmst<-"apartment|low income rental|cooperative housing|residential-two unit|triplex"
+#land use that needs homestead
+rental_hmst<-"residential|residential-zero lot line|townhouse|condominium"
+
+  #this is the basic function for estimating if a parcel is a rental or not in ramsey county, it considers the use type, homestead, and number of units because the units data is good in ramsey
+mpls_rentals_henn_parcels<-mpls_rentals_henn_parcels%>%
+  mutate(
+    rental  = case_when(
+      ((str_detect(use1_desc, rental_no_hmst)&owner_type!="govnp")| #it's a definite rental in use1desc and not a non profit and not tax exempt
+      (str_detect(use1_desc, rental_hmst)&owner_type!="govnp"&homestead=="n")) ~ 1,
+      TRUE                                                         ~ 0
+    ))
+
+table(mpls_rentals_henn_parcels$rental) #this shows that there are 79735 rental properties in hennepin county, this seems right and is lower than units because its the parcels not units
+
+mpls_rentals_henn_parcels<-mpls_rentals_henn_parcels%>%
+  mutate(mpls_rental = ifelse(!is.na(objectid),1,0))%>%
+  filter(mpls_rental==1|rental==1)
+
+```
+
+```{r, minneapolis rental license proxy test}
+#only including mpls 2020 parcels
+just_mpls_parcels<-mpls_rentals_henn_parcels%>%
+  rename(city = munic_nm)%>%
+  filter(city == "minneapolis")
+
+
+#creating a column that shows correct rental classifications, false positives, false negatives, and correct negatives
+just_mpls_parcels_rental_join<-just_mpls_parcels%>%
+  mutate(correct_rental = ifelse(rental==TRUE&!is.na(objectid), "match","correct negative"),
+         correct_rental = ifelse(rental==TRUE&is.na(objectid), "false positive",correct_rental),
+         correct_rental = ifelse(rental==FALSE&!is.na(objectid), "false negative",correct_rental))
+
+table(just_mpls_parcels_rental_join$correct_rental)
+
+#here you can see that the homestead status variable didn't work in the initial rental proxy column
+false_positives<-just_mpls_parcels_rental_join%>%
+  filter(correct_rental=="false positive")
+```
+
+Create property owner size column
+```{r}
+#there are some points that won't join so we'll add them on to the data set
+owner_size<-mpls_rentals_henn_parcels%>%
+ dplyr::select(pid,tax_address_full,owner_nm,taxpayer_nm,licensed_units)%>%
+  mutate(units = ifelse(is.na(licensed_units),1,licensed_units))
+
+owner_size<-owner_size%>%
+  mutate(tax_address_full = ifelse(is.na(tax_address_full)|tax_address_full=="","no tax add",tax_address_full),
+         owner_nm = ifelse(is.na(owner_nm)|owner_nm=="", "no owner name", owner_nm),
+         taxpayer_nm = ifelse(is.na(taxpayer_nm)|taxpayer_nm =="", "no tax name", taxpayer_nm))%>%
+  group_by(tax_address_full)%>%
+  mutate(tot_props_owned_by_taxpayer_add = sum(n()))%>%
+  group_by(tax_address_full)%>%         
+  mutate(tot_units_owned_by_taxpayer_add = sum(units))%>%
+  group_by(owner_nm)%>%
+  mutate(tot_props_owned_by_owner_name = sum(n()),
+         tot_units_owned_by_owner_name = sum(units))%>%
+  group_by(taxpayer_nm)%>%
+  mutate(tot_props_owned_by_taxpayer_nm = sum(n()),
+         tot_units_owned_by_taxpayer_nm = sum(units))
+
+owner_size_save<-owner_size
+
+owner_size<-owner_size_save
+
+owner_size<-owner_size%>%
+  mutate(max_units_by_owner = max(tot_units_owned_by_taxpayer_add,tot_units_owned_by_owner_name,tot_units_owned_by_taxpayer_nm),
+         max_props_by_owner = max(tot_props_owned_by_owner_name, tot_props_owned_by_taxpayer_add, tot_props_owned_by_taxpayer_nm))%>%
+  select(pid,
+         max_units_by_owner,
+         max_props_by_owner
+         )
+#now we join this back onto the points data set
+
+mpls_rentals_henn_parcels<-mpls_rentals_henn_parcels%>%
+  left_join(owner_size, by = c("pid"="pid"))
+
+mpls_rentals<-mpls_rentals_henn_parcels%>%
+  filter(!is.na(objectid))
+#create data frame that just has the object IDs of the licensed rentals from mpls and do a filtering join
+mpls_rentals<-unique(mpls_rentals)
+
+```
+
+make this a smaller citywide rental dataset
+```{r}
+#check which rentals don't join, 237 atm
+anti_check<-mpls_rentals%>%
+  anti_join(henn_parcels, by = c("apn"="pid"))
+
+#hm it looks like there are two different addresses/owners associated with this rental in the parcel data, but the 
+anti_check_2<-henn_parcels%>%
+  filter(grepl('2100 DUPONT',address_full))
+
+#that will just have to do I guess. hmm
+mpls_rentals_henn_parcels<-mpls_rentals%>%
+  left_join(henn_parcels, by = c("apn"="pid"))
+```
