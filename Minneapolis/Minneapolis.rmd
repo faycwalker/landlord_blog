@@ -427,18 +427,193 @@ mpls_rentals<-mpls_rentals_henn_parcels%>%
 mpls_rentals<-unique(mpls_rentals)
 
 ```
-
-make this a smaller citywide rental dataset
+only choose needed columns
 ```{r}
-#check which rentals don't join, 237 atm
-anti_check<-mpls_rentals%>%
-  anti_join(henn_parcels, by = c("apn"="pid"))
-
-#hm it looks like there are two different addresses/owners associated with this rental in the parcel data, but the 
-anti_check_2<-henn_parcels%>%
-  filter(grepl('2100 DUPONT',address_full))
-
-#that will just have to do I guess. hmm
-mpls_rentals_henn_parcels<-mpls_rentals%>%
-  left_join(henn_parcels, by = c("apn"="pid"))
+mpls_rentals<-mpls_rentals%>%
+  select(pid,
+         zip_cd,
+         munic_nm,
+         use1_desc,
+         address_full,
+         tax_address_full,
+         tax_lat,
+         tax_long,
+         tax_zip,
+         x,
+         y,
+         owner_state,
+         owner_geo,
+         owner_type,
+         max_units_by_owner,
+         max_props_by_owner,
+         licensed_units,
+         owner_name)
 ```
+
+RCAA/RCAP
+```{r}
+##what are the demographics of the areas they live in
+acs_19_vars <- load_variables(2019, "acs5", cache = TRUE)
+
+my_vars<- c(pop = "B01003_001",
+            pov_total = "B17001_001",
+            in_pov = "B17001_002",
+            med_hh_inc="B19013_001",
+            white_alone = "B03002_003", 
+            latino = "B03003_003",
+            black = "B03002_004", 
+            asian = "B03002_006", 
+            native="B03002_005",
+            api="B03002_007",
+            occ_status="B25002_001",
+            vacant="B25002_003",
+            med_year_built="B25035_001",
+            total_tenure="B25003_001",
+            owners="B25003_002",
+            renters="B25003_003")
+
+MN_demos <- get_acs(geography = "tract", variables = my_vars,
+        state="MN",geometry = TRUE) %>%
+  select(-moe) %>%
+  spread(variable, estimate) %>%
+  filter(pop!=0) %>%
+  mutate(pct_renter = (renters/total_tenure),
+         pct_owner = (owners/total_tenure),
+         pct_pov=(in_pov/pov_total),
+         pov_rate = (in_pov/pov_total),
+         pct_not_white = ((pop-white_alone)/pop),
+         pct_white = (white_alone/pop),
+         pct_latino = (latino/pop),
+         pct_black = (black/pop),
+         pct_asian = (asian/pop)) %>%
+  st_transform(26792)
+
+henn_tract_demos <- MN_demos %>%
+  filter(grepl('Hennepin', NAME)) %>%
+  mutate(
+    #40+ % pov and over 50% not white
+    RCAP = ifelse(pct_pov > .4 & pct_not_white > .5, 1,0),
+    ###Over 80% white and over 2x national median inc, which is 65889
+    RCAA = ifelse(pct_not_white <= .2 & med_hh_inc >=131778, 1, 0)
+    )
+
+mpls_rentals_sf <- st_as_sf(mpls_rentals, coords = c("x", "y"),crs = 4326, agr = "constant")%>%
+  st_transform(crs = 26792)
+
+mpls_owners_sf <- st_as_sf(mpls_rentals, coords = c("tax_long", "tax_lat"),crs = 4326, agr = "constant")%>%
+  st_transform(crs = 26792)
+
+#spatial join the rentals to the tract demographics
+rentals_demos <- mpls_rentals_sf %>%
+  st_transform(26792) %>%
+  st_join(henn_tract_demos, join=st_intersects)
+
+# spatial join the landlords to the tract
+landlords_demos <- mpls_owners_sf %>%
+  st_transform(26792) %>%
+  st_join(henn_tract_demos, join=st_intersects)
+
+#map it to see rcaas and rcaps
+rcaa_map<-henn_tract_demos %>%
+  ggplot() +
+  geom_sf(mapping = aes(fill = factor(RCAA))) +
+  scale_fill_discrete() +
+  labs(fill = "RCAA")
+
+
+#there are 95818 rental units in this data based on the licensed units
+
+#overall landlord count
+landlords_count<-landlords_demos%>%
+  select(tax_address_full)
+
+#there are 11131 unique landlords in hennepin county
+landlords_in_henn<-landlords_demos%>%
+  filter(!is.na(RCAP))
+
+sum(landlords_in_henn$licensed_units)
+
+LLC_owners<-landlords_demos%>%
+  filter(owner_type=="corpllc")%>%
+  select(tax_address_full)
+
+LLC_owners<-unique(LLC_owners)
+
+sum(LLC_owners$licensed_units)
+
+#mom and pop is if they live in the county and have fewer than 10 units
+mom_and_pop<-landlords_demos%>%
+  filter(!is.na(RCAP)&
+           (max_units_by_owner<=3))%>%
+  select(tax_address_full)
+
+mom_and_pop<-unique(mom_and_pop)
+
+sum(mom_and_pop$licensed_units)
+```
+Looking at property portfolio distribution
+```{r}
+boxplot(landlords_demos$max_props_by_owner)
+
+ggplot(landlords_demos, aes(x=max_props_by_owner)) + 
+    geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis
+                   binwidth=.5,
+                   colour="black", fill="white") +
+    geom_density(alpha=.2, fill="#FF6666")  # Overlay with transparent density plot
+
+properties_dist<-landlords_demos$max_props_by_owner
+
+quantile(properties_dist)
+```
+
+RCAA/RCAP analysis
+```{r}
+#overall mpls RCAA/RCAP makeup
+
+landlords_rcaaps<-landlords_demos%>%
+  rename(rcaa_ll = RCAA,
+         rcap_ll = RCAP)%>%
+  select(pid,
+         rcaa_ll,
+         rcap_ll)
+
+landlords_rcaaps<-unique(landlords_rcaaps)
+
+rentals_rcaaps<-rentals_demos%>%
+  rename(rcaa_rental = RCAA,
+         rcap_rental = RCAP)%>%
+  select(rcaa_rental,
+         rcap_rental,
+         pid)
+
+rentals_rcaaps<-unique(rentals_rcaaps)
+
+mpls_rcaa_rcap<-mpls_rentals%>%
+  select(pid,
+         tax_address_full,
+         licensed_units,
+         max_units_by_owner,
+         max_props_by_owner)%>%
+  left_join(landlords_rcaaps, by = c("pid" = "pid"))%>%
+  left_join(rentals_rcaaps, by = c("pid" = "pid"))
+
+mpls_rcaa_rcap<-mpls_rcaa_rcap%>%
+  group_by(rcaa_rental,
+           rcap_rental,
+           rcaa_ll,
+           rcap_ll,
+           tax_address_full)%>%
+  mutate(ll_count = n())
+  group_by(rcaa_rental,
+           rcap_rental,
+           rcaa_ll,
+           rcap_ll)%>%
+  summarise(props = n(),
+            units = sum(licensed_units))
+  
+#mom and pop RCAA/RCAP makeup
+# mpls_rcaa_rcap<-mpls_rcaa_rcap%>%
+#   group_by(rcaa_ll, rcap_ll,rcaa_rental,rcap_rental)%>%
+#   mutate()
+```
+
