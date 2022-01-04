@@ -544,7 +544,7 @@ sum(LLC_owners$licensed_units)
 #mom and pop is if they live in the county and have fewer than 10 units
 mom_and_pop<-landlords_demos%>%
   filter(!is.na(RCAP)&
-           (max_units_by_owner<=3))%>%
+           (max_units_by_owner<=10))%>%
   select(tax_address_full)
 
 mom_and_pop<-unique(mom_and_pop)
@@ -597,23 +597,94 @@ mpls_rcaa_rcap<-mpls_rentals%>%
   left_join(landlords_rcaaps, by = c("pid" = "pid"))%>%
   left_join(rentals_rcaaps, by = c("pid" = "pid"))
 
+#count of the landlords that live in RCAAs, the units in RCAAs and the RCAA prop count
+rcaa_ll<-mpls_rcaa_rcap%>%
+  filter(rcaa_ll==1)%>%
+  select(tax_address_full)%>%
+  unique()
+
+rcaa_prop_units<-mpls_rcaa_rcap%>%
+  filter(rcaa_rental==1)
+
+sum(rcaa_prop_units$licensed_units)
+
+#count of the landlords that live in RCAPS, the units in RCAPS and the RCAP prop count
+rcap_ll<-mpls_rcaa_rcap%>%
+  filter(rcap_ll==1)%>%
+  select(tax_address_full)%>%
+  unique()
+
+rcap_prop_units<-mpls_rcaa_rcap%>%
+  filter(rcap_rental==1)
+
+sum(rcap_prop_units$licensed_units)
+
 mpls_rcaa_rcap<-mpls_rcaa_rcap%>%
   group_by(rcaa_rental,
            rcap_rental,
            rcaa_ll,
            rcap_ll,
            tax_address_full)%>%
-  mutate(ll_count = n())
+  mutate(ll_count = n())%>%
   group_by(rcaa_rental,
            rcap_rental,
            rcaa_ll,
            rcap_ll)%>%
   summarise(props = n(),
             units = sum(licensed_units))
-  
-#mom and pop RCAA/RCAP makeup
-# mpls_rcaa_rcap<-mpls_rcaa_rcap%>%
-#   group_by(rcaa_ll, rcap_ll,rcaa_rental,rcap_rental)%>%
-#   mutate()
+
+mom_and_pop_rcaa_rcap<-mpls_rcaa_rcap%>%
+    filter(!is.na(rcaa_ll)&
+           (max_units_by_owner<=10))
+
+#how many mom and pop landlords live in RCAAs
+mom_and_pop_rcaa<-mom_and_pop_rcaa_rcap%>%
+  filter(rcaa_ll==1)%>%
+  select(tax_address_full)%>%
+  unique()
+
+#how many mom and pop units are in RCAAs
+mom_and_pop_rcaa<-mom_and_pop_rcaa_rcap%>%
+  filter(rcaa_rental==1)
+
+sum(mom_and_pop_rcaa$licensed_units)
+
+#how many mom and pop landlords live in RCAPs
+mom_and_pop_rcap<-mom_and_pop_rcaa_rcap%>%
+  filter(rcap_ll==1)%>%
+  select(tax_address_full)%>%
+  unique()
+
+#how many mom and pop units are in RCAPs
+mom_and_pop_rcap<-mom_and_pop_rcaa_rcap%>%
+  filter(rcap_rental==1)
+
+sum(mom_and_pop_rcap$licensed_units)
+
+#out of the mom and pop landlords living in RCAAs, X% have properties in RCAPs, 
+mom_and_pop_rcaa_rcap1<-mom_and_pop_rcaa_rcap%>%
+  filter(rcap_rental==1&rcaa_ll==1)%>%
+  select(tax_address_full)%>%
+  unique()
+
+mom_and_pop_rcaa_rcap1<-mom_and_pop_rcaa_rcap%>%
+  filter(rcap_rental==1&rcaa_ll==1)
+sum(mom_and_pop_rcaa_rcap1$licensed_units)
+
+#mom and pop landlords and rentals in same zipcode 
+mom_and_pop_szip<-landlords_demos%>%
+  filter(!is.na(RCAP)&
+           (max_units_by_owner<=10))%>%
+  filter(owner_geo=="szip")%>%
+  select(tax_address_full)%>%
+  unique()
+
+#mom and pop landlords and rentals in same zipcode 
+mom_and_pop_szip<-landlords_demos%>%
+  filter(!is.na(RCAP)&
+           (max_units_by_owner<=10))%>%
+  filter(owner_geo=="szip")
+
+sum(mom_and_pop_szip$licensed_units)
 ```
 
